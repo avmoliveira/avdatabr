@@ -4,6 +4,7 @@ DATA   : avdatabr_cp_cae
 SOURCE : Center for Airline Economics
 URL    : https://doi.org/10.7910/DVN/CRYXUZ
 --------------------------------------------*/
+*This code requires Stata 14 or higher.
 
 *----------------------------
 *initial stata setup
@@ -11,12 +12,23 @@ URL    : https://doi.org/10.7910/DVN/CRYXUZ
 /* The stata user-written modules below are necessary 
 for executing some commands in this do-file. */
 
+*fsum
+ssc install fsum
+
+*ftools
+capture ado uninstall ftools // remove program if it existed previously
+net install ftools, from("https://raw.githubusercontent.com/sergiocorreia/ftools/master/src/")
+
+*reghdfe
+capture ado uninstall reghdfe // remove program if it existed previously
+net install reghdfe, from("https://raw.githubusercontent.com/sergiocorreia/reghdfe/master/src/")
+
 *esttab
-net install st0085_2, replace
+ssc install estout, replace
 help esttab
 
 *coefplot
-net install gr0059_1, replace
+ssc install coefplot, replace
 help coefplot
 
 
@@ -43,6 +55,17 @@ summ nr_panels
 drop if nr_panels<60
 
 
+*nr of panels
+tab CityPair
+di "nr of city pairs = " `r(r)'
+
+tab YearMonth
+di "nr of periods = " `r(r)'
+
+tab Year
+di "nr of years = " `r(r)'
+
+
 *----------------
 *declare panel
 *----------------
@@ -54,6 +77,15 @@ tsset k t
 *----------------
 *variables
 *----------------
+*extracting desired variables from the original dataset
+keep k t price km_great_circle_distance jetfuel_price_org ///
+	 nr_revenue_pax market_concentration_hhi pc_load_factor ///
+	 YearMonth Year Month CityPair
+
+*descriptive statistics
+fsum, not(YearMonth k t) format(%10.2f)
+
+*generating the transformed variables for the model
 gen AirFare = ln(price)
 gen Distance = ln(km_great_circle_distance)
 gen FuelPrice = ln(jetfuel_price_org)
@@ -63,6 +95,9 @@ gen LoadFactor = ln(pc_load_factor)
 gen Pandemic = (YearMonth>=202002 & YearMonth<=202204)
 gen Trend = t/60
 
+*descriptive statistics
+fsum AirFare Distance FuelPrice PaxDens MktConc ///
+	 LoadFactor Pandemic Trend
 
 *----------------
 *seasonality
@@ -78,90 +113,103 @@ gen LowSeason = (Month==4 | Month==5 | Month==6)
 *Simple seasonality controls
 *-------------------------
 
-*FE without seasonality
-xtreg AirFare FuelPrice PaxDens MktConc LoadFactor ///
-	Pandemic Trend, fe
+*fixed-effects without seasonality
+reghdfe AirFare FuelPrice PaxDens MktConc LoadFactor ///
+	Pandemic Trend ///
+	, absorb(CityPair)
 
-est store FE1
+est store WithoutSeas
 
-*FE with seasonality
-xtreg AirFare FuelPrice PaxDens MktConc LoadFactor ///
-	Pandemic Trend WintBreak SummBrSearch SummBreak LowSeason, fe
+*fixed-effects with seasonality
+reghdfe AirFare FuelPrice PaxDens MktConc LoadFactor ///
+	Pandemic Trend ///
+	WintBreak SummBrSearch SummBreak LowSeason ///
+	, absorb(CityPair)
 
-est store FE2
+est store WithSeas
 
 *show results table
-esttab 	FE1 FE2 ///
+esttab 	WithoutSeas WithSeas ///
 		, nocons nose not nogaps noobs ///
 		b(%9.4f) varwidth(14) brackets ///
+		aic(%9.0fc) bic(%9.0fc) ar2 scalar(N) sfmt(%9.0fc) ///
 		addnote("Notes: Fixed Effect estimation")
 
 
 *-------------------------
 *Experiment n. 2
-*more granular seasonality
+*granular seasonality
 *-------------------------
-gen SummBreak_m4 = (Month==8)
-gen SummBreak_m3 = (Month==9)
-gen SummBreak_m2 = (Month==10)
-gen SummBreak_m1 = (Month==11)
-gen SummBreak_p0 = (Month==12)
-gen SummBreak_p1 = (Month==1)
-gen SummBreak_p2 = (Month==2)
-gen LowSeason_p1 = (Month==4) // base case p0
-gen LowSeason_p2 = (Month==5)
-gen LowSeason_p3 = (Month==6)
+gen SummBreak_bef4 = (Month==8)
+gen SummBreak_bef3 = (Month==9)
+gen SummBreak_bef2 = (Month==10)
+gen SummBreak_bef1 = (Month==11)
+gen SummBreak_aft0 = (Month==12)
+gen SummBreak_aft1 = (Month==1)
+gen SummBreak_aft2 = (Month==2)
+gen LowSeason_aft1 = (Month==4) // base case p0
+gen LowSeason_aft2 = (Month==5)
+gen LowSeason_aft3 = (Month==6)
 
 
 *FE with seasonality
-xtreg AirFare FuelPrice PaxDens MktConc LoadFactor ///
-	Pandemic Trend WintBreak SummBreak_m* SummBreak_p* LowSeason_p*, fe
+reghdfe AirFare FuelPrice PaxDens MktConc LoadFactor ///
+	Pandemic Trend ///
+	WintBreak SummBreak_* LowSeason_* ///
+	, absorb(CityPair)
 
-est store FE3
+est store GranularSeas
+
 
 *show results table
-esttab 	FE3 ///
+esttab 	GranularSeas ///
 		, nocons nose not nogaps noobs ///
 		b(%9.4f) varwidth(14) brackets ///
+		aic(%9.0fc) bic(%9.0fc) ar2 scalar(N) sfmt(%9.0fc) ///
 		addnote("Notes: Fixed Effect estimation")
 
 
+*coefficient Plot
+coefplot GranularSeas ///
+		, keep(WintBreak SummBreak_* SummBreak_* LowSeason_*) ///
+		xline(0, lcolor(green) lpattern(dash)) scheme(s2color) ///
+		level(95) recast(connected) lpattern(longdash) lwidth(0.1)
+
 
 *-------------------------
-*Experiment n. 3
-*Pandemic effect
+*Event study: pandemic
 *-------------------------
 
 *Before Pandemic
-xtreg AirFare FuelPrice PaxDens MktConc LoadFactor ///
-	Pandemic Trend WintBreak SummBreak_m* SummBreak_p* LowSeason_p* ///
-	if YearMonth<=202001, fe
+reghdfe AirFare FuelPrice PaxDens MktConc LoadFactor ///
+	Trend WintBreak SummBreak_* LowSeason_* ///
+	if YearMonth<=202001, absorb(CityPair)
 
 est store PrePandemic
 
 *Post Pandemic
-xtreg AirFare FuelPrice PaxDens MktConc LoadFactor ///
-	Pandemic Trend WintBreak SummBreak_m* SummBreak_p* LowSeason_p* ///
-	if YearMonth>=202205, fe
+reghdfe AirFare FuelPrice PaxDens MktConc LoadFactor ///
+	Trend WintBreak SummBreak_* LowSeason_* ///
+	if YearMonth>202204, absorb(CityPair)
 
 est store PostPandemic
 
 *show results table
 esttab 	PrePandemic PostPandemic ///
-		, nocons nose not nogaps noobs ///
+		, nocons nose not nogaps noobs mtitles ///
 		b(%9.4f) varwidth(14) brackets ///
-		addnote("Notes: Fixed Effect estimation")
+		aic(%9.0fc) bic(%9.0fc) ar2 scalar(N) sfmt(%9.0fc) ///
+		addnote("Notes: Dependent variable - AirFare" ///
+		"Fixed Effect estimation")
+		
 
 *Coefficient Plot
-ds WintBreak SummBreak_m* SummBreak_p* LowSeason_p*
-coefplot PrePandemic PostPandemic, keep(`r(varlist)') ///
-		 xline(0, lcolor(green) lpattern(dash)) scheme(s2color)
+coefplot PrePandemic PostPandemic ///
+		, keep(WintBreak SummBreak_* SummBreak_* LowSeason_*) ///
+		xline(0, lcolor(green) lpattern(dash)) scheme(s2color) ///
+		level(95) recast(connected) lpattern(longdash) lwidth(0.1) 
 
 
 
 
 
-
-
-
-    
