@@ -4,7 +4,7 @@ DATA   : avdatabr_cp_cae
 SOURCE : Center for Airline Economics
 URL    : https://doi.org/10.7910/DVN/CRYXUZ
 --------------------------------------------*/
-*This code requires Stata 14 or higher.
+*This code requires Stata 14 or higher
 
 *----------------------------
 *initial stata setup
